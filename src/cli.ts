@@ -13,6 +13,12 @@ import { Registry }                 from "./api/Registry.js";
 import { loadExtension }            from "./loader.js";
 import { App }                      from "./tui/App.js";
 import { T }                        from "./tui/theme.js";
+import { modelRegistry }            from "./models/ModelRegistry.js";
+import { CostTracker }              from "./models/CostTracker.js";
+import { AgentRunner }              from "./runner/AgentRunner.js";
+import { SessionManager }           from "./session/SessionManager.js";
+import type { SessionContext, UIContext } from "./api/ExtensionAPI.js";
+import { makeTheme }                from "./tui/theme.js";
 
 // ── Load env vars from ~/.jelly/.env ─────────────────────────────────────────
 const JELLY_HOME = process.env.JELLYOS_HOME ?? join(homedir(), ".jelly");
@@ -36,7 +42,7 @@ if (subcmd === "config") {
     for (const line of readFileSync(envPath, "utf-8").split("\n")) {
       const m = line.match(/^([A-Z_]+)=(.*)$/);
       if (!m) continue;
-      const masked = m[2].length > 8 ? m[2].slice(0, 4) + "****" + m[2].slice(-4) : "****";
+      const masked = m[2].length > 12 ? m[2].slice(0, 6) + "********" : "********";
       console.log(`  ${m[1].padEnd(28)} ${masked}`);
     }
   } else {
@@ -78,7 +84,77 @@ function loadContext(): { effectLevel: string; chain: string } {
   } catch { return { effectLevel: "normal", chain: "ethereum" }; }
 }
 
-// ── Boot ──────────────────────────────────────────────────────────────────────
+// ── Headless mode (#26) ─────────────────────────────────────────────────────
+const headlessIdx = args.indexOf("--headless");
+const headlessMsg = headlessIdx >= 0 ? args[headlessIdx + 1] : null;
+
+if (headlessMsg) {
+  (async () => {
+    if (existsSync(envPath)) loadDotenv({ path: envPath, override: false });
+
+    const registry = new Registry();
+    if (extensionPath) {
+      try {
+        await loadExtension(extensionPath, registry);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        process.stderr.write(`Extension load failed: ${msg}\n`);
+        process.exit(1);
+      }
+    }
+
+    await modelRegistry.initialise();
+
+    const session    = new SessionManager();
+    const prompt     = systemPrompt || registry.getSystemPrompt() || "You are JellyOS, an autonomous AI trading agent.";
+    session.setSystemPrompt(prompt);
+
+    const theme  = makeTheme();
+    const nullUi: UIContext = {
+      notify:    () => {},
+      setStatus: () => {},
+      setTheme:  () => {},
+      setHeader: () => {},
+      theme,
+    };
+    const sessionCtx: SessionContext = {
+      ui:     nullUi,
+      hasUI:  false,
+      config: { OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY },
+    };
+
+    // Fire session_start hooks
+    await registry.fireHook("session_start", sessionCtx);
+    session.setSystemPrompt(registry.getSystemPrompt() || prompt);
+
+    let exitCode = 0;
+    const runner = new AgentRunner(
+      registry, session,
+      (event) => {
+        if (event.type === "text_delta")  process.stdout.write(event.text);
+        if (event.type === "turn_done")   process.stdout.write("\n");
+        if (event.type === "error") {
+          process.stderr.write(`\nError: ${event.message}\n`);
+          exitCode = 1;
+        }
+      },
+      sessionCtx, "normal", modelRegistry,
+    );
+
+    try {
+      await runner.run(headlessMsg);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`Runner error: ${msg}\n`);
+      exitCode = 1;
+    }
+
+    await registry.fireHook("session_end", sessionCtx);
+    process.exit(exitCode);
+  })();
+} else {
+
+// ── Boot (interactive TUI) ────────────────────────────────────────────────────
 (async () => {
   console.clear();
   console.log(T.accent(`
@@ -120,6 +196,12 @@ function loadContext(): { effectLevel: string; chain: string } {
     console.log(T.warn("  No API key found. Set OPENROUTER_API_KEY in ~/.jelly/.env\n"));
   }
 
+  // ── Initialise model registry & cost tracker ─────────────────────────────
+  const costTracker = new CostTracker(modelRegistry);
+  console.log(T.muted("  Discovering available models via OpenRouter…"));
+  await modelRegistry.initialise();
+  console.log(T.success(`  ✓ ${modelRegistry.modelCount} models available \n`));
+
   await new Promise(r => setTimeout(r, 500));
   console.clear();
 
@@ -129,9 +211,12 @@ function loadContext(): { effectLevel: string; chain: string } {
       systemPrompt,
       effectLevel,
       chain,
+      modelReg:     modelRegistry,
+      costTracker,
       onNotifyReady:  (fn) => { _notifyFn    = fn; },
       onStatusReady:  (fn) => { _setStatusFn = fn; },
     }),
     { exitOnCtrlC: false },
   );
 })();
+} // end headless else

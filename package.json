@@ -1,6 +1,6 @@
 {
   "name": "@jellyos/agent",
-  "version": "0.1.0",
+  "version": "0.1.5",
   "description": "JellyOS — standalone AI trading agent. Runs locally, no server required.",
   "author": "JellyChain",
   "license": "MIT",
@@ -15,7 +15,8 @@
   },
   "bin": {
     "jellyos": "./bin/jellyagent",
-    "jellyagent": "./bin/jellyagent"
+    "jellyagent": "./bin/jellyagent",
+    "jellyos-mcp": "./bin/jellyos-mcp"
   },
   "scripts": {
     "build": "npx tsc",
@@ -23,6 +24,8 @@
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js",
     "type-check": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -37,7 +40,8 @@
   "devDependencies": {
     "@types/node": "^20.19.41",
     "@types/react": "^18.3.29",
-    "typescript": "^5.4.0"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.7"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -54,6 +58,7 @@
   "files": [
     "dist",
     "bin",
-    "README.md"
+    "README.md",
+    "!dist/**/*.map"
   ]
 }

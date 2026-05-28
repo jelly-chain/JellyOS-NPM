@@ -2,19 +2,23 @@
 
 <div align="center">
 
-<p align="center">
-  <a href="https://github.com/jelly-chain">
-    <img src="https://i.ibb.co/N2vqtxtM/Screenshot-2026-05-27-at-23-14-55.png" alt="JELLYOS">
-  </p>
+<pre>
+     ██╗███████╗██╗     ██╗  ██╗   ██╗  ██████╗ ███████╗
+     ██║██╔════╝██║     ██║  ╚██╗ ██╔╝ ██╔═══██╗██╔════╝
+     ██║█████╗  ██║     ██║   ╚████╔╝  ██║   ██║███████╗
+██   ██║██╔══╝  ██║     ██║    ╚██╔╝   ██║   ██║╚════██║
+╚█████╔╝███████╗███████╗███████╗██║    ╚██████╔╝███████║
+ ╚════╝ ╚══════╝╚══════╝╚══════╝╚═╝     ╚═════╝ ╚══════╝
+</pre>
 
-       
 **Standalone AI trading agent. Runs 100% locally. No server. No inbound ports. No cloud dependency.**
 
 [![npm](https://img.shields.io/npm/v/@jellyos/agent?color=14b8a6&style=flat-square)](https://www.npmjs.com/package/@jellyos/agent)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen?style=flat-square)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
 
-[NPM PACKAGE](https://www.npmjs.com/package/@jellyos/agent) 
+[Website](http://jelly-os.xyz/) • [Telegram](https://t.me/jellyxchain) • [X / Twitter](https://x.com/agentz010) • [API](https://jellychain.fun)
+
 </div>
 
 ---
@@ -35,7 +39,7 @@ Your machine
 │   ├── VaultManager        ← AES-256-GCM encrypted profit vault
 │   └── DashboardServer     ← optional local WebSocket dashboard
 │
-├── ~/.jellyos/
+├── ~/.jelly/
 │   ├── .env                ← your API keys
 │   ├── wallets/            ← local keypairs (never synced)
 │   ├── vault/              ← encrypted vault file
@@ -64,8 +68,8 @@ npm install -g @jellyos/agent
 
 ```bash
 # 1. Create config directory and set your API key
-mkdir -p ~/.jellyos
-echo "OPENROUTER_API_KEY=sk-or-..." > ~/.jellyos/.env
+mkdir -p ~/.jelly
+echo "OPENROUTER_API_KEY=sk-or-..." > ~/.jelly/.env
 
 # 2. Launch
 jellyos
@@ -87,7 +91,7 @@ cd JellyOS
 # Install dependencies
 npm install
 
-# Run one-command setup (generates wallets, vault ceremony, writes ~/.jellyos/.env)
+# Run one-command setup (generates wallets, vault ceremony, writes ~/.jelly/.env)
 bash setup.sh      # macOS / Linux
 # or
 powershell -ExecutionPolicy Bypass -File setup.ps1   # Windows
@@ -100,11 +104,11 @@ jellyos
 
 ## Configuration
 
-All config lives in `~/.jellyos/.env`. The setup wizard creates this for you, or create it manually:
+All config lives in `~/.jelly/.env`. The setup wizard creates this for you, or create it manually:
 
 ```bash
-cp .env.example ~/.jellyos/.env
-nano ~/.jellyos/.env
+cp .env.example ~/.jelly/.env
+nano ~/.jelly/.env
 ```
 
 ### AI Model Provider (pick one)
@@ -358,11 +362,11 @@ jellyos setup                         # run the setup wizard
 
 ## Security
 
-- **Keys stay local** — API keys are read from `~/.jellyos/.env` at startup and never logged or transmitted beyond outbound API calls
+- **Keys stay local** — API keys are read from `~/.jelly/.env` at startup and never logged or transmitted beyond outbound API calls
 - **Private keys never leave the process** — signing happens in memory; only the resulting signature is returned
 - **Vault encryption** — AES-256-GCM with a key derived from your passphrase using scrypt (memory-hard KDF) + random per-vault salt; the key itself is never persisted
 - **Auto-lock** — vault locks automatically on `/panic` and on process exit
-- **Wallet storage** — keypairs are written to `~/.jellyos/wallets/` which is in `.gitignore` and never included in any sync or backup by the agent
+- **Wallet storage** — keypairs are written to `~/.jelly/wallets/` which is in `.gitignore` and never included in any sync or backup by the agent
 
 ---
 

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useCallback } from "react";
-import { Box, Text, useStdout, useInput } from "ink";
+import { Box, Text, useStdout, useInput, type Key } from "ink";
 import TextInput from "ink-text-input";
 import { JELLY_COLORS } from "./theme.js";
 
@@ -20,10 +20,11 @@ export interface ChatMessage {
 }
 
 export interface REPLProps {
-  messages:    ChatMessage[];
-  streamingText: string;       // partial assistant text being streamed
+  messages:      ChatMessage[];
+  streamingText: string;
   toolRunning:   string | null;
   onSubmit(input: string): void;
+  onAbort?(): void;   // #25: called when user presses Escape during streaming
   disabled:    boolean;
 }
 
@@ -55,14 +56,19 @@ function MessageLine({ msg }: { msg: ChatMessage }) {
   if (msg.role === "tool") {
     const icon = msg.isError ? "✗" : "✓";
     const col  = msg.isError ? JELLY_COLORS.error : JELLY_COLORS.success;
+    const isLong = msg.content.length > 120;
     return (
-      <Box flexDirection="row" gap={1} marginY={0}>
-        <Text color={JELLY_COLORS.muted}>{time}</Text>
-        <Text color={col}>{icon} {msg.toolName ?? "tool"}</Text>
-        {msg.content.length < 120
-          ? <Text color={JELLY_COLORS.muted} wrap="wrap"> {msg.content}</Text>
-          : <Text color={JELLY_COLORS.muted}> ({msg.content.length} chars)</Text>
-        }
+      <Box flexDirection="column" marginY={0}>
+        <Box flexDirection="row" gap={1}>
+          <Text color={JELLY_COLORS.muted}>{time}</Text>
+          <Text color={col}>{icon} {msg.toolName ?? "tool"}</Text>
+          {isLong && <Text color={JELLY_COLORS.dim}> ({msg.content.length} chars)</Text>}
+        </Box>
+        {!isLong && (
+          <Box marginLeft={6}>
+            <Text color={JELLY_COLORS.muted} wrap="wrap">{msg.content}</Text>
+          </Box>
+        )}
       </Box>
     );
   }
@@ -88,7 +94,7 @@ function MessageLine({ msg }: { msg: ChatMessage }) {
   );
 }
 
-export function REPL({ messages, streamingText, toolRunning, onSubmit, disabled }: REPLProps) {
+export function REPL({ messages, streamingText, toolRunning, onSubmit, onAbort, disabled }: REPLProps) {
   const [input, setInput]   = useState("");
   const { stdout }          = useStdout();
   const termWidth           = stdout?.columns ?? 80;
@@ -99,6 +105,13 @@ export function REPL({ messages, streamingText, toolRunning, onSubmit, disabled 
     setInput("");
     onSubmit(trimmed);
   }, [onSubmit, disabled]);
+
+  // #25: Escape key aborts in-flight stream
+  useInput((_input: string, key: Key) => {
+    if (key.escape && disabled && onAbort) {
+      onAbort();
+    }
+  });
 
   const visible = messages.slice(-MAX_VISIBLE);
 
@@ -143,7 +156,7 @@ export function REPL({ messages, streamingText, toolRunning, onSubmit, disabled 
 
       <Box paddingX={2}>
         <Text color={JELLY_COLORS.dim}>
-          /help · /status · /vault · /wallets · /panic · Tab to complete · Ctrl-C to exit
+          /help · /palette · /cost · /prices · /news · /goals · /tasks · {disabled ? "Esc=abort · " : ""}Ctrl-C to exit
         </Text>
       </Box>
     </Box>

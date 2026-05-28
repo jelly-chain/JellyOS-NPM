@@ -40,12 +40,12 @@ export function StatusBar({
         <Text color={JELLY_COLORS.muted}>{modelShort}</Text>
       </Box>
 
-      {/* Centre: tool spinner → extension badges → idle */}
+      {/* Centre: ticker | tool spinner | extension badges */}
       <Box>
         {toolRunning
           ? <Text color={JELLY_COLORS.warn}>⚙ {toolRunning}</Text>
           : statusLine
-            ? <Text color={JELLY_COLORS.success}>{statusLine}</Text>
+            ? <Text color={JELLY_COLORS.muted}>{statusLine.slice(0, 80)}</Text>
             : <Text color={JELLY_COLORS.muted}>{connected ? "ready" : "connecting…"}</Text>
         }
       </Box>

@@ -11,6 +11,8 @@
 
 import os from "os";
 import { ModelClient, resolveModelChain, type Message } from "./ModelClient.js";
+import type { ModelRegistry } from "../models/ModelRegistry.js";
+import type { ContextStore }  from "../session/ContextStore.js";
 
 export interface SwarmConfig {
   /** Maximum parallel workers (hard cap: 5). Default: min(cpuCount, 3). */
@@ -24,6 +26,7 @@ export interface SubTaskResult {
   result: string;
   model:  string;
   ms:     number;
+  error?: string;
 }
 
 // ── Complexity scoring ───────────────────────────────────────────────────────
@@ -54,58 +57,109 @@ export function scoreComplexity(prompt: string): number {
   );
 }
 
-// ── Task decomposition ───────────────────────────────────────────────────────
+// ── Task decomposition (# 29: LLM planner with heuristic fallback) ───────────
 
 /**
- * Splits a complex prompt into 2–5 focused sub-task strings.
- * Uses simple heuristics so no extra model call is needed.
+ * LLM-based task planner. Uses a cheap worker model to decompose the prompt
+ * into focused sub-tasks as a JSON array. Falls back to heuristics on failure.
  */
-export function decompose(prompt: string, maxTasks: number): string[] {
+async function planSubtasks(
+  prompt: string,
+  maxTasks: number,
+  modelReg?: ModelRegistry,
+): Promise<string[]> {
   const cap = Math.max(2, Math.min(maxTasks, 5));
 
-  // Split on explicit conjunctions / punctuation
+  // Attempt LLM decomposition with a cheap/fast model
+  try {
+    const chain  = resolveModelChain(modelReg);
+    // Prefer a worker-tier model for planning (fast + cheap)
+    const plannerCfg = chain.find(c => modelReg?.getTier(c.model) === "worker") ?? chain[chain.length - 1] ?? chain[0]!;
+    const client = new ModelClient({ ...plannerCfg, temperature: 0.2 }, modelReg);
+
+    const plannerPrompt =
+      `Split the following request into exactly ${cap} focused, non-overlapping sub-tasks.\n` +
+      `Each sub-task must be independently answerable using data tools.\n` +
+      `Output ONLY a valid JSON array of strings. No explanation, no markdown.\n\n` +
+      `Request: ${prompt}`;
+
+    let output = "";
+    for await (const chunk of client.stream([
+      { role: "system",  content: "You output only valid JSON arrays of strings. No markdown, no explanation." },
+      { role: "user",    content: plannerPrompt },
+    ], [])) {
+      if (chunk.type === "delta" && chunk.text) output += chunk.text;
+      if (chunk.type === "error") throw new Error(chunk.error);
+    }
+
+    // Extract JSON array from output (model might wrap in markdown)
+    const jsonMatch = output.match(/\[\s*"[\s\S]*?"\s*(?:,\s*"[\s\S]*?"\s*)*\]/);
+    if (jsonMatch) {
+      const tasks = JSON.parse(jsonMatch[0]) as unknown;
+      if (Array.isArray(tasks) && tasks.every((t): t is string => typeof t === "string") && tasks.length >= 2) {
+        return tasks.slice(0, cap);
+      }
+    }
+  } catch {
+    // Fall through to heuristic decomposition
+  }
+
+  return decomposeHeuristic(prompt, cap);
+}
+
+/** Original heuristic decomposer — used as fallback when LLM planner fails */
+export function decomposeHeuristic(prompt: string, maxTasks: number): string[] {
+  const cap = Math.max(2, Math.min(maxTasks, 5));
+
   const parts = prompt
     .split(/,\s*| and | also | then | additionally | plus /i)
     .map(s => s.trim())
     .filter(s => s.length > 4);
 
-  if (parts.length >= 2) {
-    return parts.slice(0, cap);
-  }
+  if (parts.length >= 2) return parts.slice(0, cap);
 
-  // Fallback: split action verbs into separate sub-questions
   const verbMatches = [...prompt.matchAll(/\b(analyze|compare|predict|scan|check|estimate|evaluate)\b[^,.?]*/gi)];
-  if (verbMatches.length >= 2) {
-    return verbMatches.slice(0, cap).map(m => m[0].trim());
-  }
+  if (verbMatches.length >= 2) return verbMatches.slice(0, cap).map(m => m[0].trim());
 
-  // Cannot decompose meaningfully → return as-is (single task)
   return [prompt];
 }
 
-// ── Reviewer synthesis ───────────────────────────────────────────────────────
+/** Exported for tests — heuristic only, no model call */
+export const decompose = decomposeHeuristic;
+
+// ── Reviewer synthesis (#39: compact refs via ContextStore) ─────────────────
 
 async function reviewerSynthesize(
   originalPrompt: string,
-  results: SubTaskResult[],
-  systemPrompt: string,
+  allResults:     SubTaskResult[],
+  systemPrompt:   string,
+  modelReg?:      ModelRegistry,
+  contextRef?:    string,
 ): Promise<string> {
-  const chain  = resolveModelChain();
+  const chain  = resolveModelChain(modelReg);
   const cfg    = chain[0]!;
-  const client = new ModelClient(cfg);
+  const client = new ModelClient(cfg, modelReg);
 
-  const context = results
-    .map((r, i) => `### Sub-task ${i + 1}: ${r.task}\n${r.result}`)
-    .join("\n\n");
+  const results = allResults.filter(r => !r.error);
+
+  // #39: If ContextStore holds the full results, send compact summaries + reference
+  const context = contextRef
+    ? results.map((r, i) =>
+        `Sub-task ${i + 1} (${r.task.slice(0, 50)}): ${r.result.slice(0, 300)}...`
+      ).join("\n") + `\n\n${contextRef}`
+    : results
+        .map((r, i) => `### Sub-task ${i + 1}: ${r.task}\n${r.result}`)
+        .join("\n\n");
 
   const messages: Message[] = [
     { role: "system", content: systemPrompt },
     {
       role: "user",
       content:
-        `You are a synthesis reviewer. The following sub-tasks were run in response to the user's original request.\n\n` +
-        `**Original request:** ${originalPrompt}\n\n${context}\n\n` +
-        `Write a concise, unified answer that directly addresses the original request using all the above findings.`,
+        `You are a synthesis reviewer. Sub-tasks were executed for the following request.\n\n` +
+        `**Original request:** ${originalPrompt}\n\n` +
+        `**Sub-task results:**\n${context}\n\n` +
+        `Write a concise, unified answer that directly addresses the original request.`,
     },
   ];
 
@@ -121,11 +175,13 @@ async function reviewerSynthesize(
 export class SwarmRouter {
   private maxAgents:           number;
   private complexityThreshold: number;
+  private modelRegistry?:      ModelRegistry;
 
-  constructor(cfg: SwarmConfig = {}) {
+  constructor(cfg: SwarmConfig = {}, modelReg?: ModelRegistry) {
     const cpus              = os.cpus().length;
     this.maxAgents          = Math.min(cfg.maxAgents ?? Math.min(cpus, 3), 5);
     this.complexityThreshold = cfg.complexityThreshold ?? 40;
+    this.modelRegistry       = modelReg;
   }
 
   /** True when the prompt is complex enough to warrant swarm execution. */
@@ -148,13 +204,18 @@ export class SwarmRouter {
    * @param onProgress    - Called as each sub-task completes
    */
   async run(
-    prompt:       string,
-    systemPrompt: string,
-    onProgress:   (result: SubTaskResult, remaining: number) => void,
+    prompt:        string,
+    systemPrompt:  string,
+    onProgress:    (result: SubTaskResult, remaining: number) => void,
+    contextStore?: ContextStore,  // #39: optional store for offloading sub-results
   ): Promise<{ synthesis: string; subResults: SubTaskResult[] }> {
-    const tasks      = decompose(prompt, this.maxAgents);
-    const chain      = resolveModelChain();
+    // #29: Use LLM planner for task decomposition (falls back to heuristic)
+    const tasks      = await planSubtasks(prompt, this.maxAgents, this.modelRegistry);
+    const chain      = resolveModelChain(this.modelRegistry);
     const subResults: SubTaskResult[] = [];
+
+    // #39: Open a task context folder to offload sub-results (saves context window)
+    const taskCtx = contextStore?.openTask(`Swarm: ${prompt.slice(0, 60)}`);
 
     // Split tasks into groups of 3 (the required "groups-of-3" planner)
     const GROUP_SIZE = 3;
@@ -167,25 +228,32 @@ export class SwarmRouter {
 
     const runOne = async (task: string, mIdx: number, remaining: number): Promise<void> => {
       const cfg    = chain[mIdx % chain.length] ?? chain[0]!;
-      const client = new ModelClient(cfg);
+      const client = new ModelClient(cfg, this.modelRegistry);
       const msgs: Message[] = [
         { role: "system", content: systemPrompt },
         { role: "user",   content: task },
       ];
 
       const t0  = Date.now();
-      let   out = "";
+      let   out   = "";
+      let   error: string | undefined;
       for await (const chunk of client.stream(msgs, [])) {
         if (chunk.type === "delta" && chunk.text) out += chunk.text;
+        if (chunk.type === "error")              error = chunk.error ?? "Sub-task model error";
       }
 
       const r: SubTaskResult = {
         task,
-        result: out || "(no output)",
+        result: out || (error ? `(error: ${error})` : "(no output)"),
         model:  cfg.model,
         ms:     Date.now() - t0,
+        error,
       };
       subResults.push(r);
+      // #39: Write sub-result to context file instead of keeping raw in memory
+      if (taskCtx && contextStore) {
+        contextStore.appendFinding(taskCtx.taskId, `Sub-task: ${task.slice(0, 50)}`, r.result);
+      }
       onProgress(r, remaining);
     };
 
@@ -200,7 +268,13 @@ export class SwarmRouter {
       );
     }
 
-    const synthesis = await reviewerSynthesize(prompt, subResults, systemPrompt);
+    // #39: Pass context reference to reviewer (compact path vs raw dump)
+    const contextRef = taskCtx ? contextStore?.getReference(taskCtx.taskId) : undefined;
+    const synthesis  = await reviewerSynthesize(prompt, subResults, systemPrompt, this.modelRegistry, contextRef);
+
+    // Close the context folder (auto-deletes in 5s)
+    if (taskCtx) contextStore?.closeTask(taskCtx.taskId);
+
     return { synthesis, subResults };
   }
 }

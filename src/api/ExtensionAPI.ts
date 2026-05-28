@@ -28,10 +28,16 @@ export function text(t: string): ToolContent {
 // ── Tool definition ───────────────────────────────────────────────────────────
 
 export interface ToolDef<P extends TSchema = TSchema> {
-  name:        string;
-  label:       string;
-  description: string;
-  parameters:  P;
+  name:             string;
+  label:            string;
+  description:      string;
+  parameters:       P;
+  /**
+   * #10: If true, the agent pauses before executing this tool and asks the
+   * user for confirmation. Use for any tool that moves money or signs txs.
+   * The REPL renders an [APPROVE] prompt — user types y/n within 60 seconds.
+   */
+  requiresApproval?: boolean;
   execute(id: string, params: Static<P>): Promise<ToolContent>;
 }
 
@@ -104,7 +110,7 @@ export type SessionEvent =
 
 export interface SessionContext {
   ui:    UIContext;
-  /** True when running inside an interactive TUI (always true for @jellychain/agent) */
+  /** True when running inside an interactive TUI (always true for @jellyos/agent) */
   hasUI: boolean;
   config: Record<string, string | undefined>;
 }

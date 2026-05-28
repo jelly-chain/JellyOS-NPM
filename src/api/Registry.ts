@@ -108,7 +108,7 @@ export class Registry {
         } else {
           await h(undefined, ctx);  // (_event, ctx) => {...}  — Pi convention
         }
-      } catch { /* hooks must not crash the session */ }
+      } catch (e) { console.error(`[Registry] hook "${event}" threw:`, e); }
     }
   }
 
