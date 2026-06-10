@@ -22,18 +22,10 @@ import type {
 import type { TSchema }       from "@sinclair/typebox";
 
 export interface LoaderOptions {
-  /**
-   * Called when the extension uses ui.setStatus(key, value).
-   * The App component passes a state-setter here so status badges update live.
-   */
   onStatusUpdate?: (key: string, value: string) => void;
-
-  /**
-   * Called when the extension calls ui.notify(message).
-   * Before the TUI is mounted, the App wires this to React state.
-   * We store the latest notifier here so the extension can call it any time.
-   */
   onNotify?: (message: string) => void;
+  /** Called when the extension calls ui.showModelSelector(query). */
+  onShowModelSelector?: (query?: string) => void;
 }
 
 export async function loadExtension(
@@ -48,15 +40,16 @@ export async function loadExtension(
 
   const theme = makeTheme();
 
-  // Live-updateable notifier — App.tsx replaces this once mounted
   let _notify = opts.onNotify ?? ((_msg: string) => {});
   let _setStatus = opts.onStatusUpdate ?? ((_k: string, _v: string) => {});
+  let _showModelSelector = opts.onShowModelSelector ?? ((_q?: string) => {});
 
   const ui: UIContext = {
     notify(message: string)             { _notify(message); },
     setStatus(key: string, value: string) { _setStatus(key, value); },
     setTheme(_name: string)             { /* engine uses fixed jelly theme */ },
     setHeader(_factory)                 { /* engine renders its own Ink header */ },
+    showModelSelector(query?: string)   { _showModelSelector(query); },
     theme,
   };
 
@@ -119,5 +112,24 @@ export async function loadExtension(
     );
   }
 
-  await fn(api);
+  // Intercept console.log/error/warn during extension load so that any
+  // stray prints in the extension (e.g. loadSkills logging) are routed
+  // through ui.notify instead of raw stdout writes that corrupt the TUI.
+  const _origLog = console.log;
+  const _origError = console.error;
+  const _origWarn = console.warn;
+  const _extLog = (...args: unknown[]) => {
+    const msg = args.map(a => (typeof a === "string" ? a : String(a))).join(" ");
+    ui.notify(msg);
+  };
+  console.log = _extLog;
+  console.error = _extLog;
+  console.warn = _extLog;
+  try {
+    await fn(api);
+  } finally {
+    console.log = _origLog;
+    console.error = _origError;
+    console.warn = _origWarn;
+  }
 }

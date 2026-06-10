@@ -79,6 +79,12 @@ export interface UIContext {
    */
   setHeader(factory: HeaderFactory): void;
 
+  /**
+   * Open the interactive model selector overlay.
+   * @param query Optional initial search query to pre-filter the list.
+   */
+  showModelSelector(query?: string): void;
+
   theme: ThemeContext;
 }
 

@@ -153,12 +153,6 @@ export function REPL({ messages, streamingText, toolRunning, onSubmit, onAbort, 
           placeholder={disabled ? "thinking…" : "message or /command"}
         />
       </Box>
-
-      <Box paddingX={2}>
-        <Text color={JELLY_COLORS.dim}>
-          /help · /palette · /cost · /prices · /news · /goals · /tasks · {disabled ? "Esc=abort · " : ""}Ctrl-C to exit
-        </Text>
-      </Box>
     </Box>
   );
 }

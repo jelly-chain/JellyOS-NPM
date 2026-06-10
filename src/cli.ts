@@ -3,7 +3,7 @@
  * Completely standalone — all outbound, no inbound ports exposed.
  */
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { resolve, join }            from "node:path";
 import { homedir }                  from "node:os";
 import { render }                   from "ink";
@@ -13,6 +13,7 @@ import { Registry }                 from "./api/Registry.js";
 import { loadExtension }            from "./loader.js";
 import { App }                      from "./tui/App.js";
 import { T }                        from "./tui/theme.js";
+import { wireNotify, safeLog }       from "./util/safeLog.js";
 import { modelRegistry }            from "./models/ModelRegistry.js";
 import { CostTracker }              from "./models/CostTracker.js";
 import { AgentRunner }              from "./runner/AgentRunner.js";
@@ -80,6 +81,15 @@ function loadContext(): { effectLevel: string; chain: string } {
   if (!existsSync(ctxPath)) return { effectLevel: "normal", chain: "ethereum" };
   try {
     const ctx = JSON.parse(readFileSync(ctxPath, "utf-8"));
+    if (ctx.model && typeof ctx.model === "string") {
+      process.env.DEFAULT_MODEL = ctx.model;
+      try {
+        const ef = join(JELLY_HOME, ".env");
+        const c = existsSync(ef) ? readFileSync(ef, "utf-8") : "";
+        const re = /^DEFAULT_MODEL=.*$/m;
+        writeFileSync(ef, re.test(c) ? c.replace(re, `DEFAULT_MODEL=${ctx.model}`) : c + `\nDEFAULT_MODEL=${ctx.model}\n`, "utf-8");
+      } catch { /* non-fatal */ }
+    }
     return { effectLevel: ctx.effect_level ?? "normal", chain: ctx.active_chain ?? "ethereum" };
   } catch { return { effectLevel: "normal", chain: "ethereum" }; }
 }
@@ -115,6 +125,7 @@ if (headlessMsg) {
       setStatus: () => {},
       setTheme:  () => {},
       setHeader: () => {},
+      showModelSelector: () => {},
       theme,
     };
     const sessionCtx: SessionContext = {
@@ -170,10 +181,9 @@ if (headlessMsg) {
   const registry                   = new Registry();
   const { effectLevel, chain }     = loadContext();
 
-  // These callbacks are forwarded into the extension API so ui.setStatus
-  // and ui.notify work even during the session_start hook (before Ink mounts).
   let _notifyFn:   ((msg: string)           => void) | null = null;
   let _setStatusFn:((k: string, v: string) => void) | null = null;
+  let _showModelSelectorFn: ((q?: string)   => void) | null = null;
 
   if (extensionPath) {
     try {
@@ -181,6 +191,7 @@ if (headlessMsg) {
       await loadExtension(extensionPath, registry, {
         onNotify:      (msg) => { _notifyFn?.(msg); },
         onStatusUpdate:(k, v) => { _setStatusFn?.(k, v); },
+        onShowModelSelector: (q) => { _showModelSelectorFn?.(q); },
       });
       console.log(T.success(`  ✓ ${registry.listTools().length} tools · ${registry.listCommands().length} commands`));
     } catch (e: any) {
@@ -213,10 +224,20 @@ if (headlessMsg) {
       chain,
       modelReg:     modelRegistry,
       costTracker,
-      onNotifyReady:  (fn) => { _notifyFn    = fn; },
+      onNotifyReady:  (fn) => { _notifyFn    = fn; wireNotify(fn); },
       onStatusReady:  (fn) => { _setStatusFn = fn; },
+      onModelSelectorReady: (fn) => { _showModelSelectorFn = fn; },
     }),
     { exitOnCtrlC: false },
   );
+  // Ink owns the terminal from this point on. Any console.log/error/warn
+  // writes raw bytes to stdout, bypassing Ink's rendering buffer. Ink's
+  // cursor-up calculation becomes wrong → stacked border lines.
+  // NOTE: process.stdout.write is intentionally NOT patched — Ink uses it
+  // for every render frame; intercepting it globally would break Ink output.
+  process.prependListener("SIGWINCH", () => { process.stdout.write("\x1B[2J\x1B[H"); });
+  console.log = safeLog;
+  console.error = safeLog;
+  console.warn = safeLog;
 })();
 } // end headless else

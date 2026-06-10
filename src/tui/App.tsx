@@ -4,10 +4,15 @@
  * live side panel with ticker/prices, and command palette triggered via /palette.
  */
 
-import React, { useState, useCallback, useEffect, useRef } from "react";
+import React, { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { Box, Text, useApp, useInput } from "ink";
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { Type } from "@sinclair/typebox";
 import { StatusBar }    from "./StatusBar.js";
 import { REPL }         from "./REPL.js";
+import { ModelSelector } from "./ModelSelector.js";
 import type { ChatMessage } from "./REPL.js";
 import { makeTheme, T, JELLY_COLORS } from "./theme.js";
 import { Registry }     from "../api/Registry.js";
@@ -94,6 +99,7 @@ export interface AppProps {
   costTracker?: CostTracker;
   onNotifyReady?: (fn: (msg: string) => void) => void;
   onStatusReady?: (fn: (key: string, val: string) => void) => void;
+  onModelSelectorReady?: (fn: (query?: string) => void) => void;
 }
 
 let _msgIdCounter = 0;
@@ -111,6 +117,7 @@ export function App({
   costTracker,
   onNotifyReady,
   onStatusReady,
+  onModelSelectorReady,
 }: AppProps) {
   const { exit }                      = useApp();
   const [messages, setMessages]       = useState<ChatMessage[]>([]);
@@ -124,6 +131,13 @@ export function App({
   const [ticker, setTicker]           = useState("");
   const [costBadge, setCostBadge]     = useState("");
   const [newsBadge, setNewsBadge]     = useState("");
+  // ── Sidebar live data state ─────────────────────────────────────────────
+  const [sidebarTickers, setSidebarTickers] = useState<Array<{symbol: string, price: number, changePct: number}>>([]);
+  const [sidebarNews, setSidebarNews]       = useState<Array<{title: string, sentiment: number, source: string}>>([]);
+  const [rotationSlots, setRotationSlots]   = useState<Array<{id: string, tier: string} | null>>([null, null, null, null, null]);
+  // ── Model selector overlay state ──────────────────────────────────────
+  const [showModelSelector, setShowModelSelector]         = useState(false);
+  const [modelSelectorInitialQuery, setModelSelectorInitialQuery] = useState("");
   const runnerRef                     = useRef<AgentRunner | null>(null);
   const sessionRef                    = useRef<SessionManager | null>(null);
   const sessionCtxRef                 = useRef<SessionContext | null>(null);
@@ -147,7 +161,16 @@ export function App({
     if (key === "effect_level") setEffectLevel(value);
   }, []);
 
-  const uiCtx: UIContext = { notify, setStatus, setTheme(_n) {}, setHeader(_f) {}, theme };
+  const uiCtx: UIContext = {
+    notify, setStatus,
+    setTheme(_n) {},
+    setHeader(_f) {},
+    showModelSelector: (query?: string) => {
+      setModelSelectorInitialQuery(query ?? "");
+      setShowModelSelector(true);
+    },
+    theme,
+  };
 
   // Register built-in tools
   function registerBuiltinTools(): void {
@@ -172,8 +195,8 @@ export function App({
     registry.addTool({ name: "get_defi_tvl",      label: "DeFi TVL",        description: "DeFiLlama TVL by chain or all chains.", parameters: defiTvlParams,       execute: (id: string, p: any) => getDefiTvlTool(id, p) });
     registry.addTool({ name: "get_solana_stats",  label: "Solana Stats",    description: "Solana network TPS and health.", parameters: solanaStatsParams,  execute: () => getSolanaStatsTool() });
     // #31: Ephemeral task context
-    registry.addTool({ name: "read_task_context", label: "Read Task Context", description: "Read saved task context from a previous multi-step operation.", parameters: require("@sinclair/typebox").Type.Object({ taskId: require("@sinclair/typebox").Type.String({ description: "Task ID from a previous task reference" }) }), execute: (id: string, p: any) => contextStore.readContextTool(id, p) });
-    registry.addTool({ name: "list_tasks",        label: "List Tasks",       description: "List active and recent task context folders.", parameters: require("@sinclair/typebox").Type.Object({}), execute: () => contextStore.listTasksTool() });
+    registry.addTool({ name: "read_task_context", label: "Read Task Context", description: "Read saved task context from a previous multi-step operation.", parameters: Type.Object({ taskId: Type.String({ description: "Task ID from a previous task reference" }) }), execute: (id: string, p: any) => contextStore.readContextTool(id, p) });
+    registry.addTool({ name: "list_tasks",        label: "List Tasks",       description: "List active and recent task context folders.", parameters: Type.Object({}), execute: () => contextStore.listTasksTool() });
     // #12: Goal management
     registry.addTool({ name: "set_goal",        label: "Set Goal",        description: "Set a persistent cross-session goal for the agent to monitor.", parameters: goalManager.setGoalParams,     execute: (id: string, p: any) => goalManager.setGoalTool(id, p) });
     registry.addTool({ name: "complete_goal",   label: "Complete Goal",   description: "Mark a goal as completed.",                                    parameters: goalManager.completeGoalParams, execute: (id: string, p: any) => goalManager.completeGoalTool(id, p) });
@@ -194,6 +217,14 @@ export function App({
   }
 
   useEffect(() => { onNotifyReady?.(notify); onStatusReady?.(setStatus); }, []);
+
+  // ── Expose model selector trigger to extensions ──────────────────────────
+  useEffect(() => {
+    onModelSelectorReady?.((initialQuery?: string) => {
+      setModelSelectorInitialQuery(initialQuery ?? "");
+      setShowModelSelector(true);
+    });
+  }, [onModelSelectorReady]);
 
   useEffect(() => {
     registerBuiltinTools();
@@ -221,7 +252,23 @@ export function App({
       setTicker(priceFeed.tickerLine(6));
       if (costTracker) setCostBadge(costTracker.statusLine());
       setNewsBadge(newsFeed.statusBadge());
-    }, 5_000);
+      // Update sidebar live data
+      const allTicks = priceFeed.getAll();
+      setSidebarTickers(allTicks.slice(0, 8).map(t => ({ symbol: t.symbol, price: t.price, changePct: t.change24h })));
+      const latestNews = newsFeed.getLatest();
+      if (latestNews?.items) {
+        setSidebarNews(latestNews.items.slice(0, 6).map(item => ({ title: item.title ?? item.source ?? "News", sentiment: item.sentiment ?? 0, source: item.source ?? "" })));
+      }
+      // Read rotation slots from context.json
+      try {
+        const JELLY_HOME = process.env.JELLYOS_HOME ?? join(homedir(), ".jelly");
+        const ctxPath = join(JELLY_HOME, "context.json");
+        if (existsSync(ctxPath)) {
+          const store = JSON.parse(readFileSync(ctxPath, "utf-8"));
+          if (store.rotationSlots) setRotationSlots(store.rotationSlots);
+        }
+      } catch { /* non-fatal */ }
+    }, 3_000);
 
     const saveInterval = setInterval(() => { costTracker?.saveLifetime(); }, 60_000);
 
@@ -287,6 +334,13 @@ export function App({
     setTicker(priceFeed.tickerLine(6));
     if (costTracker) setCostBadge(costTracker.statusLine());
     setNewsBadge(newsFeed.statusBadge());
+    // Initial sidebar data fetch (before interval fires)
+    const initialTicks = priceFeed.getAll();
+    setSidebarTickers(initialTicks.slice(0, 8).map(t => ({ symbol: t.symbol, price: t.price, changePct: t.change24h })));
+    const initialNews = newsFeed.getLatest();
+    if (initialNews?.items) {
+      setSidebarNews(initialNews.items.slice(0, 6).map(item => ({ title: item.title ?? item.source ?? "News", sentiment: item.sentiment ?? 0, source: item.source ?? "" })));
+    }
 
     return () => {
       if (sessionCtxRef.current) registry.fireHook("session_end", sessionCtxRef.current).catch(() => {});
@@ -446,29 +500,139 @@ export function App({
     try { await runnerRef.current.run(input); } catch (e: any) { setDisabled(false); notify(T.error(`Error: ${e.message}`)); }
   }, [registry, exit, push, notify, uiCtx, modelReg, costTracker]);
 
+  // ── Handle model selection ───────────────────────────────────────────
+  const handleModelSelect = useCallback((modelId: string) => {
+    setShowModelSelector(false);
+    try {
+      const JELLY_HOME = process.env.JELLYOS_HOME ?? join(homedir(), ".jelly");
+      const envFile = join(JELLY_HOME, ".env");
+      mkdirSync(JELLY_HOME, { recursive: true });
+      const content = existsSync(envFile) ? readFileSync(envFile, "utf-8") : "";
+      const re = /^DEFAULT_MODEL=.*$/m;
+      const line = `DEFAULT_MODEL=${modelId}`;
+      writeFileSync(envFile, re.test(content) ? content.replace(re, line) : content + "\n" + line + "\n", "utf-8");
+      process.env.DEFAULT_MODEL = modelId;
+      const ctxPath = join(JELLY_HOME, "context.json");
+      const store = existsSync(ctxPath) ? JSON.parse(readFileSync(ctxPath, "utf-8")) : {};
+      store.model = modelId;
+      // Also save as rotation slot 1 (primary)
+      const tier = modelReg?.getTier?.(modelId) ?? "worker";
+      const slots = store.rotationSlots ?? [null, null, null, null, null];
+      slots[0] = { id: modelId, tier };
+      store.rotationSlots = slots;
+      writeFileSync(ctxPath, JSON.stringify(store, null, 2), "utf-8");
+    } catch { /* non-fatal */ }
+    notify(T.accent(`Model set to: ${modelId}\nRestart jellyos to apply.`));
+  }, [notify]);
+
+  const handleModelCancel = useCallback(() => {
+    setShowModelSelector(false);
+  }, []);
+
+  const modelList = useMemo(() => {
+    if (!modelReg) return [] as Array<{ id: string; tier: string }>;
+    const tiers = ["orchestrator", "analyst", "worker", "free"];
+    const items: Array<{ id: string; tier: string }> = [];
+    for (const tier of tiers) {
+      const pool = (modelReg as any).getPool(tier);
+      for (const tm of pool) {
+        if (tm.available && tm.failures < 3) {
+          items.push({ id: tm.model.id, tier });
+        }
+      }
+    }
+    return items;
+  }, [modelReg]);
+
   const ctx = getContextBar(sessionRef.current);
   const statusLine = [ticker, costBadge, newsBadge, ...Object.values(statusBadges)].filter(Boolean).join("  ") || null;
 
+  // ── Sidebar helper functions ───────────────────────────────────────────────
+  const changeColor = (pct: number) => pct > 0 ? JELLY_COLORS.success : pct < 0 ? JELLY_COLORS.error : JELLY_COLORS.muted;
+  const changeArrow = (pct: number) => pct > 0 ? "▲" : pct < 0 ? "▼" : "─";
+  const SIDEBAR_W = 42;
+
+  // ── Overlay: model selector ────────────────────────────────────────────
+  if (showModelSelector) {
+    return (
+      <Box flexDirection="column">
+        <StatusBar model={modelName} chain={chain} vaultLocked={vaultLocked} effectLevel={effectLevel} toolRunning={toolRunning} connected={true} statusLine={statusLine} />
+        <ModelSelector
+          models={modelList}
+          currentModelId={process.env.DEFAULT_MODEL ?? ""}
+          onSelect={handleModelSelect}
+          onCancel={handleModelCancel}
+          initialQuery={modelSelectorInitialQuery}
+        />
+      </Box>
+    );
+  }
+
   // ── Multi-pane layout ────────────────────────────────────────────────────
   return (
-    <Box flexDirection="column" height="100%">
+    <Box flexDirection="column">
       <StatusBar model={modelName} chain={chain} vaultLocked={vaultLocked} effectLevel={effectLevel} toolRunning={toolRunning} connected={true} statusLine={statusLine} />
       <Box flexDirection="row" flexGrow={1} overflow="hidden">
-        {/* Side panel — live ticker + context bar */}
-        <Box flexDirection="column" width={32} borderStyle="single" borderColor={JELLY_COLORS.dim} paddingX={1} flexShrink={0}>
-          <Text color={JELLY_COLORS.accent} bold>📡 Ticker</Text>
-          <Text color={JELLY_COLORS.muted} wrap="truncate">{ticker || "Loading…"}</Text>
-          <Text color={JELLY_COLORS.dim}>{"─".repeat(28)}</Text>
-          <Text color={JELLY_COLORS.accent}>Context {ctx.turboReady ? "" : "⚠"}</Text>
-          <Text color={ctx.color}>{ctx.bar} {ctx.pct}%{ctx.turboReady ? "" : " no turbo"}</Text>
-          <Text color={JELLY_COLORS.dim}>{"─".repeat(28)}</Text>
-          <Text color={JELLY_COLORS.accent}>Effect</Text>
-          <Text color={effectLevel === "eco" ? "#22c55e" : effectLevel === "turbo" ? "#f59e0b" : effectLevel === "max" ? "#ef4444" : JELLY_COLORS.accent}>
-            {effectLevel.toUpperCase()}
-          </Text>
-          <Text color={JELLY_COLORS.dim}>{"─".repeat(28)}</Text>
-          <Text color={JELLY_COLORS.accent}>News</Text>
-          <Text color={JELLY_COLORS.muted} wrap="truncate">{newsBadge || "…"}</Text>
+        {/* Side panel — fixed live panels */}
+        <Box flexDirection="column" width={SIDEBAR_W} flexShrink={0}>
+          {/* Ticker Panel */}
+          <Box flexDirection="column" borderStyle="round" borderColor={JELLY_COLORS.dim} paddingX={1}>
+            <Text bold>
+              📡 Ticker
+              {rotationSlots.filter(s => s && s.id).length > 0 && (
+                <Text color="#6b7280"> ↻{rotationSlots.filter(s => s && s.id).length}</Text>
+              )}
+            </Text>
+            {sidebarTickers.length > 0 ? sidebarTickers.map((t, i) => {
+              const arrow = changeArrow(t.changePct);
+              const col = changeColor(t.changePct);
+              const pctStr = (t.changePct > 0 ? "+" : "") + t.changePct.toFixed(1) + "%";
+              return <Text key={i} color={col}>{t.symbol.padEnd(8)}${String(t.price).padStart(9)} {arrow}{pctStr}</Text>;
+            }) : <Text color={JELLY_COLORS.muted}>Loading prices…</Text>}
+          </Box>
+
+          {/* Context Panel */}
+          <Box flexDirection="column" borderStyle="round" borderColor={JELLY_COLORS.dim} paddingX={1} marginTop={1}>
+            <Text bold>Context</Text>
+            <Text color={ctx.color}>{ctx.bar} {ctx.pct}%</Text>
+            {ctx.turboReady ? null : <Text color={JELLY_COLORS.warn}>⚠ no turbo</Text>}
+          </Box>
+
+          {/* Effect Panel */}
+          <Box flexDirection="column" borderStyle="round" borderColor={JELLY_COLORS.dim} paddingX={1} marginTop={1}>
+            <Text bold>Effect</Text>
+            <Text color={effectLevel === "eco" ? "#22c55e" : effectLevel === "turbo" ? "#f59e0b" : effectLevel === "max" ? "#ef4444" : JELLY_COLORS.accent}>
+              {effectLevel.toUpperCase()}
+            </Text>
+          </Box>
+
+          {/* News Panel */}
+          <Box flexDirection="column" borderStyle="round" borderColor={JELLY_COLORS.dim} paddingX={1} marginTop={1}>
+            <Text bold>News</Text>
+            {sidebarNews.length > 0 ? sidebarNews.map((n, i) => {
+              const sentColor = n.sentiment > 0.3 ? JELLY_COLORS.success : n.sentiment < -0.3 ? JELLY_COLORS.error : JELLY_COLORS.muted;
+              const sentPct = Math.round((n.sentiment + 1) * 50);
+              const title = n.title.length > 28 ? n.title.slice(0, 26) + "…" : n.title;
+              return (
+                <Box key={i} flexDirection="row" justifyContent="space-between">
+                  <Text color={JELLY_COLORS.muted}>{title}</Text>
+                  <Text color={sentColor}>{sentPct}%</Text>
+                </Box>
+              );
+            }) : <Text color={JELLY_COLORS.muted}>Loading news…</Text>}
+          </Box>
+
+          {/* Feeds Panel */}
+          <Box flexDirection="column" borderStyle="round" borderColor={JELLY_COLORS.dim} paddingX={1} marginTop={1}>
+            <Text bold>Feeds</Text>
+            <Text color={JELLY_COLORS.muted}>[coingecko] SOLANA…</Text>
+            <Text color={JELLY_COLORS.muted}>[coingecko] ETHEREUM…</Text>
+            <Text color={JELLY_COLORS.muted}>[etherscan] BTC Price…</Text>
+            <Text color={JELLY_COLORS.muted}>[etherscan] ETF Gas…</Text>
+            <Text color={JELLY_COLORS.muted}>[binance] XRPUSDT 24h…</Text>
+            <Text color={JELLY_COLORS.muted}>[binance] AVAXUSDT 24h…</Text>
+            <Text color={JELLY_COLORS.muted}>[binance] SOLUSDT 24h…</Text>
+          </Box>
         </Box>
 
         {/* Main REPL */}
@@ -480,7 +644,6 @@ export function App({
             onSubmit={handleSubmit}
             disabled={disabled}
             onAbort={() => {
-              // #25: Escape aborts in-flight stream
               runnerRef.current?.abort();
               setDisabled(false);
               setToolRunning(null);

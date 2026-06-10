@@ -36,6 +36,9 @@ export interface RecentSession {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DbType = any;
 
+import { createRequire } from "module";
+const cjsRequire = createRequire(import.meta.url);
+
 export class MemoryStore {
   private db: DbType = null;
   private available  = false;
@@ -48,8 +51,7 @@ export class MemoryStore {
     try {
       // node:sqlite is available in Node 22+ (experimental) and Node 24 (stable)
       // We import it dynamically to avoid a hard crash on older Node versions
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      const sqlite = require("node:sqlite");
+      const sqlite = cjsRequire("node:sqlite");
       mkdirSync(JELLY_HOME, { recursive: true });
       this.db = new sqlite.DatabaseSync(join(JELLY_HOME, "memory.db"));
       this.db.exec(`
@@ -59,7 +61,7 @@ export class MemoryStore {
           role      TEXT    NOT NULL,
           content   TEXT    NOT NULL,
           tokens    INTEGER DEFAULT 0,
-          ts        INTEGER NOT NULL,
+        ts        INTEGER NOT NULL,
           tags      TEXT    DEFAULT '[]'
         );
         CREATE INDEX IF NOT EXISTS idx_session ON messages(sessionId);
