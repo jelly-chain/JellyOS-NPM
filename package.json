@@ -1,6 +1,6 @@
 {
   "name": "@jellyos/agent",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "JellyOS — standalone AI trading agent. Runs locally, no server required.",
   "author": "JellyChain",
   "license": "MIT",
