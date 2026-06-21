@@ -1,0 +1,6 @@
+{
+  "appName": "JellyOS",
+  "version": "2.0.0",
+  "environment": "development",
+  "logLevel": "info"
+}
