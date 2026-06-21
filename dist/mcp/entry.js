@@ -1,0 +1,71 @@
+/**
+ * MCP server entry — bootstraps the Registry with built-in tools
+ * and starts the MCP stdio server.
+ */
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { existsSync } from "node:fs";
+import { config as loadDotenv } from "dotenv";
+import { Registry } from "../api/Registry.js";
+import { loadExtension } from "../loader.js";
+import { MCPServer } from "./server.js";
+import { modelRegistry } from "../models/ModelRegistry.js";
+import { getPricesTool, topMoversTool, marketOverviewTool, getPricesParams, topMoversParams, marketOverviewParams, priceFeed, } from "../tools/PriceFeed.js";
+import { getNewsTool, getNewsParams, newsFeed } from "../tools/NewsSentiment.js";
+import { getCandlesParams, getCandlesTool, analyzeTAParams, fullAnalysis } from "../tools/TechnicalAnalysis.js";
+import { getFearGreedTool, fearGreedParams, getFundingRatesTool, fundingRatesParams, getBtcMempoolTool, btcMempoolParams, getDefiTvlTool, defiTvlParams, getSolanaStatsTool, solanaStatsParams, } from "../tools/MarketSentiment.js";
+const JELLY_HOME = process.env.JELLYOS_HOME ?? join(homedir(), ".jelly");
+const envPath = join(JELLY_HOME, ".env");
+if (existsSync(envPath))
+    loadDotenv({ path: envPath, override: false });
+const registry = new Registry();
+// Load optional extension from --extension arg
+const extIdx = process.argv.indexOf("--extension");
+const extPath = extIdx >= 0 ? process.argv[extIdx + 1] : null;
+if (extPath && existsSync(extPath)) {
+    try {
+        await loadExtension(extPath, registry);
+    }
+    catch (e) {
+        process.stderr.write(`[MCP] Extension load failed: ${e}\n`);
+    }
+}
+// Register all built-in tools
+await modelRegistry.initialise();
+const mk = modelRegistry;
+registry.addTool({ name: "list_models", label: "List Models", description: "Search available AI models.", parameters: mk["listModelsParams"], execute: (id, p) => mk["listModelsTool"](id, p) });
+registry.addTool({ name: "get_prices", label: "Get Prices", description: "Get live crypto prices.", parameters: getPricesParams, execute: (id, p) => getPricesTool(id, p) });
+registry.addTool({ name: "get_top_movers", label: "Top Movers", description: "Top 24h price movers.", parameters: topMoversParams, execute: (id, p) => topMoversTool(id, p) });
+registry.addTool({ name: "market_overview", label: "Market Overview", description: "Aggregated market data.", parameters: marketOverviewParams, execute: () => marketOverviewTool() });
+registry.addTool({ name: "get_news", label: "Get News", description: "Crypto news + sentiment.", parameters: getNewsParams, execute: (id, p) => getNewsTool(id, p) });
+registry.addTool({ name: "get_candles", label: "Get Candles", description: "OHLCV + TA analysis from Binance.", parameters: getCandlesParams, execute: (id, p) => getCandlesTool(id, p) });
+registry.addTool({ name: "get_fear_greed", label: "Fear & Greed", description: "Crypto fear & greed index.", parameters: fearGreedParams, execute: (id, p) => getFearGreedTool(id, p) });
+registry.addTool({ name: "get_funding_rates", label: "Funding Rates", description: "Perp funding rates.", parameters: fundingRatesParams, execute: (id, p) => getFundingRatesTool(id, p) });
+registry.addTool({ name: "get_btc_mempool", label: "BTC Mempool", description: "BTC mempool + fees.", parameters: btcMempoolParams, execute: () => getBtcMempoolTool() });
+registry.addTool({ name: "get_defi_tvl", label: "DeFi TVL", description: "DeFiLlama TVL.", parameters: defiTvlParams, execute: (id, p) => getDefiTvlTool(id, p) });
+registry.addTool({ name: "get_solana_stats", label: "Solana Stats", description: "Solana TPS + health.", parameters: solanaStatsParams, execute: () => getSolanaStatsTool() });
+registry.addTool({
+    name: "analyze_ta", label: "Technical Analysis", description: "RSI, MACD, Bollinger on price arrays.",
+    parameters: analyzeTAParams,
+    execute: async (_id, p) => {
+        const params = p;
+        const closes = params.prices;
+        const candles = closes.map((c, i) => ({
+            timestamp: i, open: c, high: (params.highs?.[i] ?? c), low: (params.lows?.[i] ?? c), close: c, volume: (params.volumes?.[i] ?? 0),
+        }));
+        const results = fullAnalysis(candles);
+        const text = results.map(r => {
+            const s = r.signal === "bullish" ? "🟢" : r.signal === "bearish" ? "🔴" : "⚪";
+            return `${s} ${r.indicator}: ${typeof r.value === "number" ? r.value.toFixed(2) : String(r.value)}`;
+        }).join("\n");
+        return { content: [{ type: "text", text: `Technical Analysis:\n${text}` }], details: {} };
+    },
+});
+// Start price + news feeds
+priceFeed.track("btc", "eth", "sol", "bnb", "matic", "arb", "op", "avax");
+priceFeed.start();
+newsFeed.start();
+// Start MCP server
+const server = new MCPServer(registry);
+await server.run();
+//# sourceMappingURL=entry.js.map
