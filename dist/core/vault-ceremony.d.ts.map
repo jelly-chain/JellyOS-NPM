@@ -1,0 +1,1 @@
+{"version":3,"file":"vault-ceremony.d.ts","sourceRoot":"","sources":["../../src/core/vault-ceremony.ts"],"names":[],"mappings":"AAaA,MAAM,WAAW,cAAc;IAC7B,GAAG,EAAE,MAAM,CAAC;IACZ,MAAM,EAAE,MAAM,CAAC;IACf,MAAM,EAAE,MAAM,CAAC;IACf,WAAW,EAAE,MAAM,CAAC;CACrB;AA8FD;;;;GAIG;AACH,wBAAsB,gBAAgB,CAAC,SAAS,EAAE,MAAM,GAAG,OAAO,CAAC,cAAc,CAAC,CAoDjF"}

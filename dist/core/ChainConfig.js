@@ -1,0 +1,54 @@
+// Shared chain configuration used across all JellyOS modules
+// Single source of truth for chain names, Alchemy networks, and symbols
+export const CHAINS = {
+    bsc: { name: 'bsc', alchemyNetwork: 'bnb-mainnet', symbol: 'BNB', chainId: 56, enabled: true },
+    ethereum: { name: 'ethereum', alchemyNetwork: 'eth-mainnet', symbol: 'ETH', chainId: 1, enabled: true },
+    base: { name: 'base', alchemyNetwork: 'base-mainnet', symbol: 'ETH', chainId: 8453, enabled: true },
+    arbitrum: { name: 'arbitrum', alchemyNetwork: 'arb-mainnet', symbol: 'ETH', chainId: 42161, enabled: true },
+    polygon: { name: 'polygon', alchemyNetwork: 'polygon-mainnet', symbol: 'MATIC', chainId: 137, enabled: true },
+    avalanche: { name: 'avalanche', alchemyNetwork: 'avax-mainnet', symbol: 'AVAX', chainId: 43114, enabled: true },
+    optimism: { name: 'optimism', alchemyNetwork: 'opt-mainnet', symbol: 'ETH', chainId: 10, enabled: true },
+    fantom: { name: 'fantom', alchemyNetwork: 'fantom-mainnet', symbol: 'FTM', chainId: 250, enabled: true },
+    gnosis: { name: 'gnosis', alchemyNetwork: 'gnosis-mainnet', symbol: 'xDAI', chainId: 100, enabled: true },
+    celo: { name: 'celo', alchemyNetwork: 'celo-mainnet', symbol: 'CELO', chainId: 42220, enabled: true },
+    scroll: { name: 'scroll', alchemyNetwork: 'scroll-mainnet', symbol: 'ETH', chainId: 534352, enabled: true },
+    linea: { name: 'linea', alchemyNetwork: 'linea-mainnet', symbol: 'ETH', chainId: 59144, enabled: true },
+    zksync: { name: 'zksync', alchemyNetwork: 'zksync-mainnet', symbol: 'ETH', chainId: 324, enabled: true },
+    mantle: { name: 'mantle', alchemyNetwork: 'mantle-mainnet', symbol: 'MNT', chainId: 5000, enabled: true },
+    blast: { name: 'blast', alchemyNetwork: 'blast-mainnet', symbol: 'ETH', chainId: 81457, enabled: true },
+};
+/**
+ * Map of chain key → Alchemy network string.
+ * Derived from CHAINS so it can never drift out of sync.
+ */
+export const ALCHEMY_NETWORKS = Object.fromEntries(Object.entries(CHAINS).filter(([, info]) => info.enabled).map(([key, info]) => [key, info.alchemyNetwork]));
+/**
+ * Set of Alchemy network identifiers that JellyOS supports (derived from CHAINS
+ * plus known Alchemy networks that are supported by the API but not in our
+ * default config here).
+ */
+const EXTRA_ALCHEMY_NETWORKS = new Set([
+    'berachain', 'opbnb', 'polygonzkevm', 'metis', 'rootstock', 'sei', 'sonic',
+]);
+/**
+ * Check whether a chain key is supported by Alchemy.
+ * Derives from CHAINS + known extras so it can never drift.
+ */
+export function isAlchemySupported(chain) {
+    if (CHAINS[chain]?.enabled)
+        return true;
+    const network = CHAINS[chain]?.alchemyNetwork ?? chain;
+    return EXTRA_ALCHEMY_NETWORKS.has(network);
+}
+export const CHAIN_NETWORKS = Object.fromEntries(Object.entries(CHAINS).map(([key, info]) => [key, info.alchemyNetwork]));
+export const CHAIN_SYMBOLS = Object.fromEntries(Object.entries(CHAINS).map(([key, info]) => [key, info.symbol]));
+export function getAlchemyNetwork(chain) {
+    return CHAIN_NETWORKS[chain] || 'eth-mainnet';
+}
+export function getChainSymbol(chain) {
+    return CHAIN_SYMBOLS[chain] || 'ETH';
+}
+export function getSupportedChains() {
+    return Object.keys(CHAINS);
+}
+//# sourceMappingURL=ChainConfig.js.map
