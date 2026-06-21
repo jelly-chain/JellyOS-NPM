@@ -1,0 +1,12 @@
+# Sensitive
+.env
+.env.*
+
+# OS junk
+.DS_Store
+
+# Dependencies
+node_modules/
+
+# Build artifacts (keep dist/ for npm package)
+*.tsbuildinfo
