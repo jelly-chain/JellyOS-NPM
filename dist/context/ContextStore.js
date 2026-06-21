@@ -1,0 +1,191 @@
+import { Logger } from '../core/utils/Logger.js';
+import { existsSync, mkdirSync } from 'fs';
+import { resolve } from 'path';
+import { homedir } from 'os';
+const DEFAULT_CONFIG = {
+    maxSize: 10000,
+    defaultTTL: 3600,
+    cleanupInterval: 60000,
+    persistencePath: resolve(homedir(), '.jellyos', 'cache'),
+    enablePersistence: true,
+    relevanceDecay: 0.99,
+};
+export class ContextStore {
+    config;
+    logger;
+    store = new Map();
+    cleanupTimer = null;
+    tagIndex = new Map();
+    constructor(config) {
+        this.config = { ...DEFAULT_CONFIG, ...config };
+        this.logger = new Logger('ContextStore');
+        this.ensurePersistencePath();
+        this.startCleanup();
+    }
+    ensurePersistencePath() {
+        if (!existsSync(this.config.persistencePath)) {
+            mkdirSync(this.config.persistencePath, { recursive: true });
+        }
+    }
+    startCleanup() {
+        this.cleanupTimer = setInterval(() => this.cleanup(), this.config.cleanupInterval);
+    }
+    cleanup() {
+        const now = Date.now();
+        let cleaned = 0;
+        for (const [key, entry] of [...this.store.entries()]) {
+            if (entry.expiresAt && entry.expiresAt < now) {
+                this.delete(key);
+                cleaned++;
+            }
+        }
+        if (this.store.size > this.config.maxSize) {
+            const entries = [...this.store.entries()]
+                .sort((a, b) => a[1].relevance - b[1].relevance);
+            const toRemove = entries.slice(0, Math.floor(this.config.maxSize * 0.1));
+            for (const [key] of toRemove) {
+                this.delete(key);
+            }
+            cleaned += toRemove.length;
+        }
+        if (cleaned > 0) {
+            this.logger.debug(`Cleaned up ${cleaned} expired entries`);
+        }
+    }
+    set(key, value, ttl) {
+        const now = Date.now();
+        const entry = {
+            key,
+            value,
+            createdAt: now,
+            updatedAt: now,
+            lastAccessed: now,
+            accessCount: 0,
+            relevance: 1.0,
+            tags: [],
+        };
+        if (ttl) {
+            entry.ttl = ttl;
+            entry.expiresAt = now + ttl * 1000;
+        }
+        this.store.set(key, entry);
+        const words = key.toLowerCase().split(/[:\-_]/);
+        for (const word of words) {
+            if (!this.tagIndex.has(word)) {
+                this.tagIndex.set(word, new Set());
+            }
+            this.tagIndex.get(word).add(key);
+        }
+        this.emitChangeEvent('set', key, value);
+    }
+    get(key) {
+        const entry = this.store.get(key);
+        if (!entry)
+            return null;
+        if (entry.expiresAt && entry.expiresAt < Date.now()) {
+            this.delete(key);
+            return null;
+        }
+        entry.accessCount++;
+        entry.lastAccessed = Date.now();
+        entry.relevance *= this.config.relevanceDecay;
+        entry.relevance = Math.min(1.0, entry.relevance + 0.1);
+        return entry.value;
+    }
+    getEntry(key) {
+        return this.store.get(key) || null;
+    }
+    delete(key) {
+        const entry = this.store.get(key);
+        if (!entry)
+            return false;
+        this.store.delete(key);
+        const words = key.toLowerCase().split(/[:\-_]/);
+        for (const word of words) {
+            const tagSet = this.tagIndex.get(word);
+            if (tagSet) {
+                tagSet.delete(key);
+            }
+        }
+        this.emitChangeEvent('delete', key, null);
+        return true;
+    }
+    has(key) {
+        const entry = this.store.get(key);
+        if (!entry)
+            return false;
+        if (entry.expiresAt && entry.expiresAt < Date.now()) {
+            this.delete(key);
+            return false;
+        }
+        return true;
+    }
+    search(query, limit = 10) {
+        const terms = query.toLowerCase().split(/\s+/);
+        const scores = new Map();
+        for (const term of terms) {
+            for (const [key, entry] of this.store) {
+                if (entry.expiresAt && entry.expiresAt < Date.now())
+                    continue;
+                let score = 0;
+                if (key.toLowerCase().includes(term))
+                    score += 2;
+                if (entry.value && JSON.stringify(entry.value).toLowerCase().includes(term))
+                    score += 1;
+                scores.set(key, (scores.get(key) || 0) + score + entry.relevance);
+            }
+        }
+        return [...scores.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, limit)
+            .map(([key]) => this.store.get(key));
+    }
+    getByTag(tag, limit) {
+        const keys = this.tagIndex.get(tag.toLowerCase());
+        if (!keys)
+            return [];
+        const entries = [...keys]
+            .map(key => this.store.get(key))
+            .filter((entry) => entry !== undefined && (!entry.expiresAt || entry.expiresAt >= Date.now()));
+        entries.sort((a, b) => b.relevance - a.relevance);
+        return limit ? entries.slice(0, limit) : entries;
+    }
+    keys() {
+        return [...this.store.keys()];
+    }
+    clear() {
+        this.store.clear();
+        this.tagIndex.clear();
+    }
+    size() {
+        return this.store.size;
+    }
+    getStats() {
+        let totalAccess = 0;
+        let expired = 0;
+        const now = Date.now();
+        for (const entry of this.store.values()) {
+            totalAccess += entry.accessCount;
+            if (entry.expiresAt && entry.expiresAt < now)
+                expired++;
+        }
+        return {
+            totalEntries: this.store.size,
+            totalAccesses: totalAccess,
+            expiredEntries: expired,
+            tagCount: this.tagIndex.size,
+        };
+    }
+    emitChangeEvent(action, key, value) {
+        // Event emission for listeners
+    }
+    close() {
+        if (this.cleanupTimer) {
+            clearInterval(this.cleanupTimer);
+            this.cleanupTimer = null;
+        }
+        this.logger.info('ContextStore closed');
+    }
+}
+export const context = new ContextStore();
+//# sourceMappingURL=ContextStore.js.map
